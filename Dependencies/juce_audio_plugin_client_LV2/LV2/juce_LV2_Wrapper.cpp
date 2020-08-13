@@ -852,7 +852,10 @@ public:
     
     const float getParameter3(int index)
     {
-        if(auto* param = filter->getParameters()[index])
+        auto* param = filter->getParameters()[index];
+        if(auto* rangeParam = dynamic_cast<RangedAudioParameter*>(param))
+            return rangeParam->convertFrom0to1(param->getValue());
+        else if(param)
             return param->getValue();
         else
             return 0.0;
@@ -860,6 +863,12 @@ public:
     
     const void setParameter3(int index, float value)
     {
+        auto* param = filter->getParameters()[index];
+        if(auto* rangeParam = dynamic_cast<RangedAudioParameter*>(param))
+        {
+            rangeParam->setValue(rangeParam->convertTo0to1(value));
+            rangeParam->sendValueChangedMessageToListeners(rangeParam->convertTo0to1(value));
+        }
         if (auto* param = filter->getParameters()[index])
         {
             param->setValue(value);
