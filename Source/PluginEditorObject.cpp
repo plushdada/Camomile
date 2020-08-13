@@ -6,6 +6,86 @@
 
 #include "PluginEditorObject.hpp"
 #include "PluginLookAndFeel.hpp"
+#include <algorithm>
+
+//////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////     PATCH              ////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////
+
+GuiPatch::GuiPatch(CamomileEditorMouseManager& processor, pd::Patch patch) : m_processor(processor), m_patch(patch)
+{
+    setInterceptsMouseClicks(false, true);
+    updateSize();
+    updateObjects();
+}
+
+void GuiPatch::updateObjects()
+{
+    auto guis = m_patch.getGuis();
+    auto isObjectDeprecated = [&](object_pair const& pair)
+    {
+        return pair.first != nullptr && std::find(guis.begin(), guis.end(), pair.first->getGUI()) == guis.end();
+    };
+    m_objects.erase(std::remove_if(m_objects.begin(), m_objects.end(), isObjectDeprecated), m_objects.end());
+    
+    for(auto& gui : guis)
+    {
+        auto it = std::find_if(m_objects.begin(), m_objects.end(), [&gui](object_pair const& pair)
+                               {
+            return pair.first != nullptr && pair.first->getGUI() == gui;
+        });
+        if(it == m_objects.end())
+        {
+            object_uptr object(PluginEditorObject::createTyped(m_processor, gui));
+            if(object != nullptr)
+            {
+                addAndMakeVisible(object.get());
+                auto label = object->getLabel();
+                if(label != nullptr)
+                {
+                    addAndMakeVisible(label.get());
+                }
+                m_objects.push_back({std::move(object), std::move(label)});
+            }
+        }
+        else
+        {
+            it->first->updateInterface();
+            auto label = it->first->getLabel();
+            if(label != nullptr)
+            {
+                addAndMakeVisible(label.get());
+            }
+            it->second = std::move(label);
+        }
+    }
+}
+
+void GuiPatch::updateSize()
+{
+    auto const bounds = m_patch.getBounds();
+    int const width  = bounds[2] > 0 ? std::max(bounds[2], 100) : 400;
+    int const height = bounds[3] > 0 ? std::max(bounds[3], 100) : 300;
+    if(width != getWidth() || height != getHeight())
+    {
+        setSize(width, height);
+    }
+}
+
+void GuiPatch::updateObjectsValues()
+{
+    for(auto const& object : m_objects)
+    {
+        if(object.first != nullptr)
+        {
+            object.first->updateValue();
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////     Object              ////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////
 
 PluginEditorObject* PluginEditorObject::createTyped(CamomileEditorMouseManager& p, pd::Gui& g)
 {
@@ -67,9 +147,8 @@ PluginEditorObject* PluginEditorObject::createTyped(CamomileEditorMouseManager& 
 PluginEditorObject::PluginEditorObject(CamomileEditorMouseManager& p, pd::Gui& g) : gui(g), patch(p), edited(false),
 value(g.getValue()), min(g.getMinimum()), max(g.getMaximum())
 {
-    std::array<int, 4> const bounds(gui.getBounds());
-    setBounds(bounds[0], bounds[1], bounds[2], bounds[3]);
     setOpaque(false);
+    updateInterface();
 }
 
 PluginEditorObject::~PluginEditorObject() {}
@@ -110,7 +189,7 @@ void PluginEditorObject::stopEdition() noexcept
     patch.stopEdition();
 }
 
-void PluginEditorObject::update()
+void PluginEditorObject::updateValue()
 {
     if(edited == false)
     {
@@ -123,13 +202,24 @@ void PluginEditorObject::update()
     }
 }
 
-Label* PluginEditorObject::getLabel()
+void PluginEditorObject::updateInterface()
+{
+    std::array<int, 4> const bounds(gui.getBounds());
+    setBounds(bounds[0], bounds[1], bounds[2], bounds[3]);
+    repaint();
+}
+
+std::unique_ptr<Label> PluginEditorObject::getLabel()
 {
     pd::Label const lbl = gui.getLabel();
     const String text = String(lbl.getText());
     if(text.isNotEmpty())
     {
-        Label* label = new Label();
+        auto label = std::make_unique<Label>();
+        if(label == nullptr)
+        {
+            return nullptr;
+        }
         const Font ft = CamoLookAndFeel::getFont(lbl.getFontName()).withPointHeight(static_cast<float>(lbl.getFontHeight()));
         const int width = ft.getStringWidth(text) + 1;
         const int height = ft.getHeight();
@@ -148,6 +238,10 @@ Label* PluginEditorObject::getLabel()
     return nullptr;
 }
 
+pd::Gui PluginEditorObject::getGUI()
+{
+    return gui;
+}
 
 //////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////     BANG        /////////////////////////////////////
@@ -499,7 +593,7 @@ void GuiTextEditor::editorHidden(Label*, TextEditor&)
     stopEdition();
 }
 
-void GuiTextEditor::update()
+void GuiTextEditor::updateValue()
 {
     if(edited == false)
     {
@@ -736,7 +830,7 @@ void GuiAtomSymbol::labelTextChanged(Label* lbl)
     }
 }
 
-void GuiAtomSymbol::update()
+void GuiAtomSymbol::updateValue()
 {
     if(edited == false)
     {
@@ -761,16 +855,16 @@ void GuiArray::resized()
 {
     m_array.setBounds(getLocalBounds());
 }
-
+    
 //////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////     GOP               /////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////
 
-GuiGraphOnParent::GuiGraphOnParent(CamomileEditorMouseManager& p, pd::Gui& g) : PluginEditorObject(p, g)
+GuiGraphOnParent::GuiGraphOnParent(CamomileEditorMouseManager& p, pd::Gui& g) : PluginEditorObject(p, g), m_patch(p, g.getPatch())
 {
     setInterceptsMouseClicks(false, true);
     edited = true;
-    resized();
+    addAndMakeVisible(m_patch);
 }
 
 void GuiGraphOnParent::paint(Graphics& g)
@@ -779,30 +873,15 @@ void GuiGraphOnParent::paint(Graphics& g)
     g.drawRect(getLocalBounds(), 1);
 }
 
-void GuiGraphOnParent::resized()
+void GuiGraphOnParent::updateValue()
 {
-    m_labels.clear();
-    m_objects.clear();
-    const auto bounds = getLocalBounds().expanded(1);
-    for(auto& g : gui.getPatch().getGuis())
-    {
-        PluginEditorObject* obj = PluginEditorObject::createTyped(patch, g);
-        if(obj && bounds.contains(obj->getBounds()))
-        {
-            Component* label = obj->getLabel();
-            addAndMakeVisible(m_objects.add(obj));
-            if(label)
-            {
-                addAndMakeVisible(m_labels.add(label));
-            }
-        }
-    }
+    m_patch.updateObjectsValues();
 }
 
-void GuiGraphOnParent::update()
+void GuiGraphOnParent::updateInterface()
 {
-    for(auto object : m_objects) {
-        object->update(); }
+    PluginEditorObject::updateInterface();
+    m_patch.updateObjects();
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
