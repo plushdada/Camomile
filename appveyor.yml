@@ -70,19 +70,3 @@ after_build:
 
 artifacts:
   - path: '*.zip'
-
-deploy:
-  provider: GitHub
-  prerelease: true
-  overwrite: true
-  draft: true
-  auth_token:
-    secure: dOi2z1hWIXjc8+TuIZOviwwdVx94sbDnvu/n+70AUcs9tKivL6AoX37oEN2TGigE
-  artifact: /.*\.zip/
-  on:
-    appveyor_repo_tag: true
-
-notifications:
-
-  - provider: Email
-    on_build_status_changed: false
